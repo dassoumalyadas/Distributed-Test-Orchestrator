@@ -1,4 +1,4 @@
-# Distributed Test Orchestration & Execution Platform (LLD)
+# Distributed Test Orchestration & Execution Platform
 
 A production-grade, distributed test orchestration engine designed to execute **100+ heterogeneous UI & API tests** across **parallel worker containers** within a strict SLA (sub-minute wall-clock time), eliminating the long-tail straggler problem.
 
@@ -24,7 +24,7 @@ A production-grade, distributed test orchestration engine designed to execute **
                                                            │
                         ┌──────────────────────────────────┴──────────────────────────────────┐
                         ▼                                                                     ▼
-             [Playwright Worker 01]                                                [Playwright Worker 02..N]
+             [Docker Worker 01]                                                    [Docker Worker 02..10]
              • BRPOP queue:browser_ui                                              • BRPOP queue:browser_ui
              • Runs Chromium specs                                                 • Runs Chromium specs
              • PUBLISH events:results ─────────────────────┐                       • PUBLISH events:results
@@ -48,27 +48,21 @@ A production-grade, distributed test orchestration engine designed to execute **
 
 ```text
 Distributed-Test-Orchestrator/
-├── README.md                   # This master documentation
+├── README.md                   # Master documentation
 ├── ORCHESTRATOR_FLOW.md        # UML Activity, Sequence, and Class diagrams
+├── docker-compose.yml          # Container grid definition (Redis + scalable workers)
 │
 ├── java-orchestrator/          # The Scheduling & Orchestration Core
 │   ├── pom.xml                 # Maven dependencies (Jedis, Jackson, Slf4j)
 │   └── src/main/java/com/distributed/testengine/
 │       ├── OrchestratorApp.java# Main application entrypoint
-│       ├── model/              # Domain entities
-│       │   ├── TestItem.java   # Single test definition & duration metadata
-│       │   ├── TestBatch.java  # Bundled work packet for workers
-│       │   ├── TestType.java   # Enum: BROWSER_UI, INTEGRATION, HEADLESS_API
-│       │   └── TestResultEvent.java # Deserialized worker telemetry
-│       ├── sharder/            # Scheduling Intelligence
-│       │   ├── IShardingStrategy.java # Strategy Pattern interface
-│       │   └── LPTBinPackingSharder.java # Longest Processing Time First-Fit
-│       ├── broker/
-│       │   └── RedisBrokerClient.java # Jedis queue management & PubSub
-│       └── aggregator/
-│           └── ResultAggregator.java # Thread-safe counters & CLI dashboard
+│       ├── model/              # Domain entities (TestItem, TestBatch, TestResultEvent)
+│       ├── sharder/            # LPT Bin-Packing Sharding Strategy
+│       ├── broker/             # Redis client & PubSub listener
+│       └── aggregator/         # Thread-safe counters & CLI dashboard
 │
 └── playwright-suite/           # The Worker Execution Fleet
+    ├── Dockerfile              # Container image with Chromium & Linux dependencies
     ├── package.json            # Node.js dependencies (Playwright, ioredis, ts-node)
     ├── tsconfig.json           # Modern ES2022 TypeScript configuration
     ├── playwright.config.ts    # Browser engines, videos, traces, HTML reports
@@ -106,57 +100,83 @@ Distributed-Test-Orchestrator/
 
 ## Prerequisites
 
+* **Docker Desktop:** Installed and running (powers the worker container fleet & Redis)
 * **Java:** OpenJDK 21 or 25
 * **Build Tool:** Apache Maven 3.9+
-* **Node.js:** v18+ (tested on Node 26) & npm
-* **Docker:** For running the local Redis broker
+* **Node.js:** v18+ (tested on Node 26) & npm (for local development)
 
 ---
 
-## Step-by-Step Quickstart
+## Execution Modes
 
-### Step 1: Start Redis Broker
-If Redis is not already running, start it using Docker:
+You can run the grid in two modes:
+
+---
+
+### Mode 1: 100% Containerized Grid (Recommended) 🚀
+
+This runs the Redis broker and scales **10 isolated Playwright worker containers** automatically using Docker Compose.
+
+#### 1. Spin up the 10-Worker Grid
+From the project root directory:
 ```bash
-docker run -d --name redis -p 6379:6379 redis:alpine
+docker compose up -d --build --scale worker=10
 ```
-Verify it responds:
+
+Verify all 10 worker containers and Redis are running:
 ```bash
-docker exec redis redis-cli ping
-# Output: PONG
+docker compose ps
+```
+*(You will see `redis` and `distributed-test-orchestrator-worker-1` through `10` active).*
+
+#### 2. Run the Java Orchestrator
+In another terminal, trigger the 100 tests:
+```bash
+cd java-orchestrator
+mvn compile exec:java
+```
+Watch all 10 Docker worker containers divide the workload in real time!
+
+#### 3. Bring Down the Grid When Finished
+```bash
+docker compose down
 ```
 
 ---
 
-### Step 2: Install Playwright Dependencies
-Navigate to the `playwright-suite` directory:
+### Mode 2: Local Development Mode (Running Workers via Terminal) 💻
+
+If you prefer to run workers directly on your host machine without Docker containers:
+
+#### 1. Start Only Redis
+```bash
+docker compose up -d redis
+```
+
+#### 2. Start Workers in Terminal
+In one or more terminal tabs:
 ```bash
 cd playwright-suite
 npm install
-```
-
----
-
-### Step 3: Launch One or More Playwright Workers
-Open one (or multiple) terminal tabs and run:
-```bash
-cd playwright-suite
 npm run worker
 ```
-*(Tip: You can open 2 or 3 separate terminal tabs and run `npm run worker` in each to watch parallel load distribution across multiple workers!)*
 
----
-
-### Step 4: Run the Java Orchestrator
-In another terminal tab, run:
+#### 3. Run the Java Orchestrator
 ```bash
 cd java-orchestrator
 mvn compile exec:java
 ```
 
+#### 4. Stop Redis
+```bash
+docker compose down
+```
+
 ---
 
-## Sample Execution Output
+## Verified Benchmark Results
+
+Actual benchmark results running **10 parallel Docker worker containers**:
 
 ```text
 =================================================================
@@ -169,7 +189,7 @@ mvn compile exec:java
 🚀 Dispatched 39 work packets into typed Redis queues.
 
 📡 Listening for events from worker fleet...
-🚀 Progress: [█████████████████████████] 100/100 (100.0%) | Latest: API-019 on worker-7ljo6r [PASSED]  
+🚀 Progress: [█████████████████████████] 100/100 (100.0%) | Latest: API-015 on aa12c4520fee [PASSED]  
 
 =================================================================
 🏁 FINAL EXECUTION & ORCHESTRATION REPORT
@@ -178,21 +198,41 @@ Total Tests Scheduled       : 100
 Passed Tests                : 99 ✅
 Failed Tests                : 1 ❌
 Pass Rate                   : 99.0%
-Wall-Clock Execution Time   : 40.40 seconds ⚡
+Wall-Clock Execution Time   : 7.89 seconds ⚡
 Theoretical Sequential Time : 1280.6 seconds
-Parallel Speedup Factor     : 31.7x faster across workers!
+Parallel Speedup Factor     : 162.4x faster across workers!
 -----------------------------------------------------------------
 📊 WORKER LOAD DISTRIBUTION (Proving LPT Balance):
-  • worker-7ljo6r      :  52 tests completed
-  • worker-jvhxrd      :  48 tests completed
+  • 00c52ac1c492 (Pod 01) :  16 tests completed
+  • 00cf04f21a96 (Pod 02) :   3 tests completed
+  • 06b6f1e9318e (Pod 03) :   7 tests completed
+  • 25881d1de039 (Pod 04) :   7 tests completed
+  • 8965a3fde192 (Pod 05) :  16 tests completed
+  • aa12c4520fee (Pod 06) :  17 tests completed
+  • d7e3f91bc8e6 (Pod 07) :   6 tests completed
+  • d9e750ee34c7 (Pod 08) :   7 tests completed
+  • f51dd0ed8002 (Pod 09) :   8 tests completed
+  • fc28860043b2 (Pod 10) :   6 tests completed
 =================================================================
 ```
 
 ---
 
-## Extending to Full Kubernetes / Cloud Deployment
+## Useful Docker Utility Commands
 
-To take this from local LLD to cloud scale:
-1. **Containerize the Worker:** Package `playwright-suite` into a Docker image with pre-installed Chromium.
-2. **KEDA Autoscaling:** Deploy the worker on Kubernetes with KEDA to scale pods automatically based on Redis queue depth (`queue:browser_ui`).
-3. **Artifact Offloading:** Upload `.webm` video recordings and Playwright traces directly to AWS S3 or MinIO.
+* **View live logs across all 10 workers:**
+  ```bash
+  docker compose logs -f worker
+  ```
+* **View container resource usage (CPU & Memory):**
+  ```bash
+  docker stats
+  ```
+* **Clean up all unused images to reclaim disk space:**
+  ```bash
+  docker image prune -a -f
+  ```
+* **Completely shut down the Docker Desktop application:**
+  ```bash
+  killall Docker
+  ```

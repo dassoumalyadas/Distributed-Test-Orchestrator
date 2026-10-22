@@ -1,0 +1,19 @@
+# macOS
+.DS_Store
+
+# Node / Playwright
+node_modules/
+test-results/
+playwright-report/
+.env
+
+# Java / Maven
+target/
+*.class
+*.jar
+.idea/
+*.iml
+.vscode/
+
+# Logs
+*.log
